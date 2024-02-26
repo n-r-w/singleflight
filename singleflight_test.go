@@ -9,6 +9,7 @@
 package singleflight
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -20,8 +21,13 @@ import (
 func TestDo(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
+
 	var g Group[string, string]
-	v, err, _ := g.Do("key", func() (string, error) {
+	v, _, err := g.Do(ctx, "key", func(ctxFunc context.Context) (string, error) {
+		if ctxFunc != ctx {
+			t.Error("wrong context in Do func")
+		}
 		return "bar", nil
 	})
 	if got, want := fmt.Sprintf("%v (%T)", v, v), "bar (string)"; got != want {
@@ -35,9 +41,14 @@ func TestDo(t *testing.T) {
 func TestDoErr(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
+
 	var g Group[string, *string]
 	someErr := errors.New("some error")
-	v, err, _ := g.Do("key", func() (*string, error) {
+	v, _, err := g.Do(ctx, "key", func(ctxFunc context.Context) (*string, error) {
+		if ctxFunc != ctx {
+			t.Error("wrong context in Do func")
+		}
 		return nil, someErr
 	})
 	if err != someErr {
@@ -51,11 +62,17 @@ func TestDoErr(t *testing.T) {
 func TestDoDupSuppress(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
+
 	var g Group[string, string]
 	var wg1, wg2 sync.WaitGroup
 	c := make(chan string, 1)
 	var calls atomic.Int32
-	fn := func() (string, error) {
+	fn := func(ctxFunc context.Context) (string, error) {
+		if ctxFunc != ctx {
+			t.Error("wrong context in Do func")
+		}
+
 		if calls.Add(1) == 1 {
 			// First invocation.
 			wg1.Done()
@@ -76,7 +93,7 @@ func TestDoDupSuppress(t *testing.T) {
 		go func() {
 			defer wg2.Done()
 			wg1.Done()
-			v, err, _ := g.Do("key", fn)
+			v, _, err := g.Do(ctx, "key", fn)
 			if err != nil {
 				t.Errorf("Do error: %v", err)
 				return
@@ -99,6 +116,8 @@ func TestDoDupSuppress(t *testing.T) {
 func TestForgetUnshared(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
+
 	var g Group[string, int]
 
 	var firstStarted, firstFinished sync.WaitGroup
@@ -109,7 +128,11 @@ func TestForgetUnshared(t *testing.T) {
 	key := "key"
 	firstCh := make(chan struct{})
 	go func() {
-		_, _, _ = g.Do(key, func() (i int, e error) {
+		_, _, _ = g.Do(ctx, key, func(ctxFunc context.Context) (i int, e error) {
+			if ctxFunc != ctx {
+				t.Error("wrong context in Do func")
+			}
+
 			firstStarted.Done()
 			<-firstCh
 			return
@@ -122,7 +145,11 @@ func TestForgetUnshared(t *testing.T) {
 
 	secondCh := make(chan struct{})
 	go func() {
-		_, _, _ = g.Do(key, func() (i int, e error) {
+		_, _, _ = g.Do(ctx, key, func(ctxFunc context.Context) (i int, e error) {
+			if ctxFunc != ctx {
+				t.Error("wrong context in Do func")
+			}
+
 			// Notify that we started
 			secondCh <- struct{}{}
 			<-secondCh
@@ -132,7 +159,7 @@ func TestForgetUnshared(t *testing.T) {
 
 	<-secondCh
 
-	resultCh := g.DoChan(key, func() (i int, e error) {
+	resultCh := g.DoChan(ctx, key, func(context.Context) (i int, e error) {
 		panic("third must not be started")
 	})
 
@@ -157,6 +184,8 @@ func TestForgetUnshared(t *testing.T) {
 func TestDoAndForgetUnsharedRace(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
+
 	var g Group[string, int64]
 	key := "key"
 	d := time.Millisecond
@@ -167,7 +196,11 @@ func TestDoAndForgetUnsharedRace(t *testing.T) {
 		wg.Add(n)
 		for i := 0; i < n; i++ {
 			go func() {
-				_, _, _ = g.Do(key, func() (int64, error) {
+				_, _, _ = g.Do(ctx, key, func(ctxFunc context.Context) (int64, error) {
+					if ctxFunc != ctx {
+						t.Error("wrong context in Do func")
+					}
+
 					time.Sleep(d)
 					return calls.Add(1), nil
 				})

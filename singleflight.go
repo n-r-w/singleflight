@@ -3,13 +3,19 @@
 // license that can be found in the LICENSE file.
 
 // fork from https://github.com/golang/go/blob/master/src/internal/singleflight/singleflight.go
-// with generics
+// with generics and context support
 
 // Package singleflight provides a duplicate function call suppression
 // mechanism.
 package singleflight
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
+
+// doFunc is the function to be executed by Do and DoChan.
+type doFunc[V any] func(context.Context) (V, error)
 
 // call is an in-flight or completed singleflight.Do call
 type call[V any] struct {
@@ -47,7 +53,9 @@ type Result[V any] struct {
 // time. If a duplicate comes in, the duplicate caller waits for the
 // original to complete and receives the same results.
 // The return value shared indicates whether v was given to multiple callers.
-func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bool) { // nolint: revive
+// Context cancellation should be handled inside the function passed to `Do`,
+// because singleflight does not interrupt the function execution if the context is canceled.
+func (g *Group[K, V]) Do(ctx context.Context, key K, fn doFunc[V]) (v V, shared bool, err error) { // nolint: revive
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = make(map[K]*call[V])
@@ -56,20 +64,20 @@ func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bo
 		c.dups++
 		g.mu.Unlock()
 		c.wg.Wait()
-		return c.val, c.err, true
+		return c.val, true, c.err
 	}
 	c := new(call[V])
 	c.wg.Add(1)
 	g.m[key] = c
 	g.mu.Unlock()
 
-	g.doCall(c, key, fn)
-	return c.val, c.err, c.dups > 0
+	g.doCall(ctx, c, key, fn)
+	return c.val, c.dups > 0, c.err
 }
 
 // DoChan is like Do but returns a channel that will receive the
 // results when they are ready.
-func (g *Group[K, V]) DoChan(key K, fn func() (V, error)) <-chan Result[V] {
+func (g *Group[K, V]) DoChan(ctx context.Context, key K, fn doFunc[V]) <-chan Result[V] {
 	ch := make(chan Result[V], 1)
 	g.mu.Lock()
 	if g.m == nil {
@@ -86,14 +94,14 @@ func (g *Group[K, V]) DoChan(key K, fn func() (V, error)) <-chan Result[V] {
 	g.m[key] = c
 	g.mu.Unlock()
 
-	go g.doCall(c, key, fn)
+	go g.doCall(ctx, c, key, fn)
 
 	return ch
 }
 
 // doCall handles the single call for a key.
-func (g *Group[K, V]) doCall(c *call[V], key K, fn func() (V, error)) {
-	c.val, c.err = fn()
+func (g *Group[K, V]) doCall(ctx context.Context, c *call[V], key K, fn doFunc[V]) {
+	c.val, c.err = fn(ctx)
 
 	g.mu.Lock()
 	c.wg.Done()
